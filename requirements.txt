@@ -1,0 +1,8 @@
+faster-whisper
+pydub
+torch
+soundfile
+f5-tts
+PyYAML
+argostranslate
+# TTS # Optional, needed for XTTS engine

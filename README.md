@@ -1,0 +1,72 @@
+# Audio Regenerator & Dubber
+
+An AI-powered pipeline to transcribe, translate, and re-synthesize audio. This tool can be used to "clean" noisy speech by re-generating it with a high-quality TTS engine, or to perform automatic dubbing into other languages.
+
+## Features
+
+- **Robust Transcription:** Uses `faster-whisper` (including `large-v3` support) to extract text and precise timestamps from even low-quality audio.
+- **Offline Translation:** Uses `argostranslate` (OpenNMT/CTranslate2) for private, offline translation between languages (e.g., English to Czech).
+- **Advanced Synthesis:** 
+  - **F5-TTS:** Flow-matching engine for high-quality English synthesis.
+  - **Self-Cloning:** Can use the original noisy segments as a voice reference to preserve the speaker's tone while removing noise.
+  - **Global Reference:** Provide a "Gold Standard" clean sample (`--ref-audio-file`) to completely re-voice the track.
+  - **XTTS v2 Support:** Placeholder architecture for multi-lingual synthesis.
+- **Modular Workflow:** Run only transcription, only synthesis, or the full pipeline.
+
+## Installation
+
+1. **Clone the repository.**
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Download Model Checkpoints:**
+   Place F5-TTS checkpoints in `ckpts/F5TTS_v1_Base/`.
+
+## Usage
+
+### 1. English Voice Restoration (Self-Cloning)
+Transcribe noisy audio and re-synthesize it using the speaker's own voice (denoising):
+```bash
+python regenerate_audio.py --input-file noisy_track.wav --whisper-model large-v3
+```
+
+### 2. Voice Dubbing (Translation to Czech)
+Translate English audio to Czech and save the transcription data:
+```bash
+python regenerate_audio.py --input-file noisy_track.wav --output-language cs --transcribe-only
+```
+
+### 3. Professional Re-voicing (Gold Standard)
+Use a clean reference clip to dub the entire track:
+```bash
+python regenerate_audio.py --input-file noisy_track.wav \
+    --ref-audio-file clean_sample.wav \
+    --ref-text-file clean_sample.txt
+```
+
+### 4. Modular Mode (Synthesize from YAML)
+Tune synthesis parameters without re-running the transcription:
+```bash
+python regenerate_audio.py --input-file noisy_track.wav \
+    --synthesize-only --data-file transcription.yaml
+```
+
+## Arguments
+
+- `--input-file`: (Required) Path to source audio.
+- `--output-file`: Output path (default: `regenerated_track.wav`).
+- `--data-file`: Path to save/load metadata (default: `transcription.yaml`).
+- `--output-language`: Target language code (e.g., `cs`, `de`, `fr`).
+- `--whisper-model`: Whisper model size (`base`, `small`, `medium`, `large-v3`).
+- `--tts-engine`: Choose between `f5-tts` or `xtts`.
+- `--ref-audio-file`: Path to a high-quality voice sample.
+- `--ref-text-file`: Path to a `.txt` file containing the reference sample's text.
+
+## Dependencies
+
+- `faster-whisper`
+- `f5-tts`
+- `argostranslate`
+- `pydub`
+- `PyYAML`
