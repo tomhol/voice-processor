@@ -180,8 +180,8 @@ def main():
     parser.add_argument("--tts-engine", type=str, default="f5-tts", choices=["f5-tts", "xtts"], help="TTS engine to use")
     
     # Cloning / Ref args
-    parser.add_argument("--ref-audio", type=str, help="High-quality reference audio for voice cloning")
-    parser.add_argument("--ref-text", type=str, help="Text spoken in the reference audio")
+    parser.add_argument("--ref-audio-file", type=str, help="High-quality reference audio for voice cloning")
+    parser.add_argument("--ref-text-file", type=str, help="Path to txt file containing text spoken in the reference audio")
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--transcribe-only", action="store_true")
@@ -189,6 +189,13 @@ def main():
 
     args = parser.parse_args()
     print(f"Using device: {DEVICE}")
+
+    # Load reference text if provided
+    ref_text_content = None
+    if args.ref_text_file:
+        print(f"Loading reference text from {args.ref_text_file}...")
+        with open(args.ref_text_file, 'r', encoding='utf-8') as f:
+            ref_text_content = f.read().strip()
 
     transcribed_segments = None
     do_transcribe = not args.synthesize_only
@@ -211,11 +218,11 @@ def main():
             TTS_MODEL = "ckpts/F5TTS_v1_Base/model_1250000.safetensors"
             VOCAB_FILE = "ckpts/F5TTS_v1_Base/vocab.txt"
             final_audio = synthesize_f5(args.input_file, transcribed_segments, TTS_MODEL, VOCAB_FILE, 
-                                       ref_audio=args.ref_audio, ref_text=args.ref_text)
+                                       ref_audio=args.ref_audio_file, ref_text=ref_text_content)
         elif args.tts_engine == "xtts":
             target_lang = args.output_language if args.output_language else (args.input_language if args.input_language else "en")
             final_audio = synthesize_xtts(args.input_file, transcribed_segments, 
-                                         ref_audio=args.ref_audio, ref_text=args.ref_text, 
+                                         ref_audio=args.ref_audio_file, ref_text=ref_text_content, 
                                          language=target_lang)
         
         final_audio.export(args.output_file, format="wav")
