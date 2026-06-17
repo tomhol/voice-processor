@@ -1,5 +1,8 @@
 ckpts/
 *.wav
+*.txt
+*.yaml
+*.json
 *.safetensors
 *.pt
 __pycache__/

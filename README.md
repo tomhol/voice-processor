@@ -21,9 +21,7 @@ An AI-powered pipeline to transcribe, translate, and re-synthesize audio. This t
    ```bash
    pip install -r requirements.txt
    ```
-3. **Model Checkpoints:**
-   The tool will automatically download models from Hugging Face on first use. Alternatively, place them in `ckpts/`.
-
+3. 
 ## Usage
 
 ### 1. English Voice Restoration (Self-Cloning)

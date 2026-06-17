@@ -121,29 +121,45 @@ def get_f5_model(repo_id="SWivid/F5-TTS", model_type="F5-TTS"):
         "E2-TTS": dict(dim=1024, depth=24, heads=16, ff_mult=2, text_dim=512, conv_layers=4),
     }
     
+    paths = {
+        "SWivid/F5-TTS": {
+            "ckpt": "F5TTS_v1_Base/model_1250000.safetensors",
+            "vocab": "F5TTS_v1_Base/vocab.txt"
+        },
+        "SWivid/E2-TTS": {
+            "ckpt": "E2TTS_Base/model_1200000.safetensors",
+            "vocab": "E2TTS_Base/vocab.txt"
+        },
+        "chosenek/f5-tts-czech-model": {
+            "ckpt": "model_last.pt",
+            "vocab": "vocab.txt"
+        },
+    }
     if model_type not in configs:
         print(f"Warning: Unknown model type '{model_type}', defaulting to F5-TTS config.")
         config = configs["F5-TTS"]
     else:
         config = configs[model_type]
 
-    # Map model types to their standard file paths in the SWivid repo
-    subfolder = "F5TTS_Base" if model_type == "F5-TTS" else "E2TTS_Base"
-    filename = "model_1250000.safetensors" if model_type == "F5-TTS" else "model_1200000.safetensors"
+    if repo_id not in paths:
+        print(f"Warning: Unknown repo_id '{repo_id}', attempting to use local paths.")
+        model_path = paths.get("SWivid/F5-TTS") if model_type == "F5-TTS" else paths.get("SWivid/E2-TTS")
+    else:
+        model_path = paths[repo_id]
     
     print(f"\n[F5-TTS] Resolving model '{model_type}' from {repo_id}...")
     
     try:
-        ckpt_path = hf_hub_download(repo_id=repo_id, filename=f"{subfolder}/{filename}")
-        vocab_path = hf_hub_download(repo_id=repo_id, filename=f"{subfolder}/vocab.txt")
+        vocab_path = hf_hub_download(repo_id=repo_id, filename=model_path["vocab"])
+        ckpt_path = hf_hub_download(repo_id=repo_id, filename=model_path["ckpt"])
         return ckpt_path, vocab_path, config
     except Exception as e:
         # Fallback to local check if HF is offline or path is different
-        local_ckpt = f"ckpts/{subfolder}/{filename}"
-        local_vocab = f"ckpts/{subfolder}/vocab.txt"
-        if os.path.exists(local_ckpt) and os.path.exists(local_vocab):
-            print(f"HF Download failed, but found local files in {local_ckpt}. Using those.")
-            return local_ckpt, local_vocab, config
+        # local_ckpt = f"ckpts/{subfolder}/{filename}"
+        # local_vocab = f"ckpts/{subfolder}/vocab.txt"
+        # if os.path.exists(local_ckpt) and os.path.exists(local_vocab):
+        #     print(f"HF Download failed, but found local files in {local_ckpt}. Using those.")
+        #     return local_ckpt, local_vocab, config
         raise RuntimeError(f"Could not fetch F5-TTS model: {e}")
 
 def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None):
@@ -259,7 +275,7 @@ def main():
         
         if args.tts_engine == "f5-tts":
             final_audio = synthesize_f5(args.input_file, transcribed_segments, 
-                                       repo_id=args.f5-hf-repo, model_type=args.f5-model-type,
+                                       repo_id=args.f5_hf_repo, model_type=args.f5_model_type,
                                        ref_audio=args.ref_audio_file, ref_text=ref_text_content)
         elif args.tts_engine == "xtts":
             target_lang = args.output_language if args.output_language else (args.input_language if args.input_language else "en")
