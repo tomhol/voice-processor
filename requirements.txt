@@ -5,5 +5,5 @@ soundfile
 f5-tts
 PyYAML
 argostranslate
-# TTS # Optional, needed for XTTS engine
+coqui-tts
 huggingface_hub

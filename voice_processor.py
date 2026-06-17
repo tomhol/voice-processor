@@ -210,18 +210,61 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
     return final_timeline
 
 def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en"):
-    """
-    Placeholder for XTTS v2 synthesis.
-    Typically: 
     from TTS.api import TTS
-    tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(DEVICE)
-    """
+
     print(f"\n[XTTS] Initializing Engine (Language: {language})...")
-    print("NOTE: XTTS implementation is a placeholder. Install 'TTS' library to use.")
     
-    # Create a silent placeholder output
+    # Validate language code
+    supported_langs = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "hu", "ko", "ja"]
+    if language not in supported_langs:
+        print(f"Warning: Language '{language}' might not be supported by XTTS. Supported: {supported_langs}")
+
+    # Load model
+    tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+    if DEVICE == "cuda":
+        tts.to(DEVICE)
+
+    base_audio = AudioSegment.from_file(input_file) if input_file else None
     max_end = max(seg["end"] for seg in transcribed_segments)
-    return AudioSegment.silent(duration=int(max_end * 1000) + 1000)
+    final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
+
+    for idx, seg in enumerate(transcribed_segments):
+        print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
+        
+        temp_ref_path = f"temp_ref_xtts_{idx}.wav"
+        
+        if ref_audio:
+            # Global reference audio mode
+            current_ref_path = ref_audio
+        else:
+            # Self-cloning mode
+            if not base_audio:
+                raise ValueError("Self-cloning requires --input-file to extract reference audio segments.")
+            ref_start_ms = int(seg["start"] * 1000)
+            ref_end_ms = int(seg["end"] * 1000)
+            base_audio[ref_start_ms:ref_end_ms].export(temp_ref_path, format="wav")
+            current_ref_path = temp_ref_path
+
+        temp_gen_path = f"temp_gen_xtts_{idx}.wav"
+        
+        # XTTS synthesis
+        tts.tts_to_file(
+            text=seg["text"],
+            speaker_wav=current_ref_path,
+            language=language,
+            file_path=temp_gen_path
+        )
+        
+        generated_chunk = AudioSegment.from_wav(temp_gen_path)
+        target_position_ms = int(seg["start"] * 1000)
+        final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
+        
+        if not ref_audio and os.path.exists(temp_ref_path):
+            os.remove(temp_ref_path)
+        if os.path.exists(temp_gen_path):
+            os.remove(temp_gen_path)
+
+    return final_timeline
 
 def main():
     parser = argparse.ArgumentParser(description="Regenerate audio with Translation and Multiple TTS Engines")
