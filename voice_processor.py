@@ -5,6 +5,7 @@ import argparse
 import json
 import yaml
 import torch
+import copy
 import soundfile as sf
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
@@ -56,6 +57,7 @@ def transcribe(input_file, language=None, model_size="base"):
 
     print(f"Processing audio segments and timings (language={language if language else 'auto'})...")
     segments, info = whisper_model.transcribe(input_file, word_timestamps=True, language=language)
+    print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
 
     transcribed_segments = []
     for segment in segments:
@@ -69,7 +71,7 @@ def transcribe(input_file, language=None, model_size="base"):
     if not transcribed_segments:
         raise ValueError("No speech detected in the audio file.")
     
-    return transcribed_segments
+    return transcribed_segments, info.language
 
 def translate_segments(segments, target_lang, source_lang="en"):
     """
@@ -385,10 +387,19 @@ def main():
     do_synthesize = not args.transcribe_only
 
     if do_transcribe:
-        transcribed_segments = transcribe(args.input_file, language=args.input_language, model_size=args.whisper_model)
+        transcribed_segments, detected_lang = transcribe(args.input_file, language=args.input_language, model_size=args.whisper_model)
         
         if args.output_language:
-            transcribed_segments = translate_segments(transcribed_segments, args.output_language)
+            # Save original transcription first
+            import copy
+            original_segments = copy.deepcopy(transcribed_segments)
+            base, ext = os.path.splitext(args.transcript_file)
+            original_filename = f"{base}_original_lang{ext}"
+            save_data(original_segments, original_filename)
+
+            # Translate
+            source_lang = args.input_language if args.input_language else detected_lang
+            transcribed_segments = translate_segments(transcribed_segments, args.output_language, source_lang=source_lang)
             
         save_data(transcribed_segments, args.transcript_file)
     
