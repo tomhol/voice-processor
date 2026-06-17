@@ -6,3 +6,4 @@ f5-tts
 PyYAML
 argostranslate
 # TTS # Optional, needed for XTTS engine
+huggingface_hub

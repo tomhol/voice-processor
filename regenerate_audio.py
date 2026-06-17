@@ -107,13 +107,53 @@ def load_data(file_path):
         else:
             return yaml.safe_load(f)
 
-def synthesize_f5(input_file, transcribed_segments, tts_model_path, vocab_file_path, ref_audio=None, ref_text=None):
+def get_f5_model(repo_id="SWivid/F5-TTS", model_type="F5-TTS"):
+    """
+    Ensures F5-TTS model and vocab are available, downloading from HF if necessary.
+    Returns (ckpt_path, vocab_path, model_cfg)
+    """
+    from huggingface_hub import hf_hub_download
+    
+    # Standard F5-TTS Base configuration
+    # Note: If community models have different dims, we'd need to extend this mapping
+    configs = {
+        "F5-TTS": dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4),
+        "E2-TTS": dict(dim=1024, depth=24, heads=16, ff_mult=2, text_dim=512, conv_layers=4),
+    }
+    
+    if model_type not in configs:
+        print(f"Warning: Unknown model type '{model_type}', defaulting to F5-TTS config.")
+        config = configs["F5-TTS"]
+    else:
+        config = configs[model_type]
+
+    # Map model types to their standard file paths in the SWivid repo
+    subfolder = "F5TTS_Base" if model_type == "F5-TTS" else "E2TTS_Base"
+    filename = "model_1250000.safetensors" if model_type == "F5-TTS" else "model_1200000.safetensors"
+    
+    print(f"\n[F5-TTS] Resolving model '{model_type}' from {repo_id}...")
+    
+    try:
+        ckpt_path = hf_hub_download(repo_id=repo_id, filename=f"{subfolder}/{filename}")
+        vocab_path = hf_hub_download(repo_id=repo_id, filename=f"{subfolder}/vocab.txt")
+        return ckpt_path, vocab_path, config
+    except Exception as e:
+        # Fallback to local check if HF is offline or path is different
+        local_ckpt = f"ckpts/{subfolder}/{filename}"
+        local_vocab = f"ckpts/{subfolder}/vocab.txt"
+        if os.path.exists(local_ckpt) and os.path.exists(local_vocab):
+            print(f"HF Download failed, but found local files in {local_ckpt}. Using those.")
+            return local_ckpt, local_vocab, config
+        raise RuntimeError(f"Could not fetch F5-TTS model: {e}")
+
+def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None):
     if not F5_TTS_AVAILABLE:
         raise ImportError("F5-TTS is not installed or available.")
     
-    print("\n[F5-TTS] Initializing Engine...")
-    model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
-    dit_model = load_model(DiT, model_cfg, tts_model_path, vocab_file=vocab_file_path, device=DEVICE)
+    ckpt_path, vocab_path, model_cfg = get_f5_model(repo_id, model_type)
+    
+    print(f"[F5-TTS] Initializing {model_type} Engine...")
+    dit_model = load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path, device=DEVICE)
     vocoder = load_vocoder()
 
     base_audio = AudioSegment.from_file(input_file)
@@ -183,6 +223,10 @@ def main():
     parser.add_argument("--ref-audio-file", type=str, help="High-quality reference audio for voice cloning")
     parser.add_argument("--ref-text-file", type=str, help="Path to txt file containing text spoken in the reference audio")
 
+    # F5-TTS specific args
+    parser.add_argument("--f5-hf-repo", type=str, default="SWivid/F5-TTS", help="HuggingFace repo ID for F5-TTS")
+    parser.add_argument("--f5-model-type", type=str, default="F5-TTS", choices=["F5-TTS", "E2-TTS"], help="Model variation to use")
+
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--transcribe-only", action="store_true")
     mode_group.add_argument("--synthesize-only", action="store_true")
@@ -214,10 +258,8 @@ def main():
             transcribed_segments = load_data(args.data_file)
         
         if args.tts_engine == "f5-tts":
-            # Defaults for F5-TTS
-            TTS_MODEL = "ckpts/F5TTS_v1_Base/model_1250000.safetensors"
-            VOCAB_FILE = "ckpts/F5TTS_v1_Base/vocab.txt"
-            final_audio = synthesize_f5(args.input_file, transcribed_segments, TTS_MODEL, VOCAB_FILE, 
+            final_audio = synthesize_f5(args.input_file, transcribed_segments, 
+                                       repo_id=args.f5-hf-repo, model_type=args.f5-model-type,
                                        ref_audio=args.ref_audio_file, ref_text=ref_text_content)
         elif args.tts_engine == "xtts":
             target_lang = args.output_language if args.output_language else (args.input_language if args.input_language else "en")

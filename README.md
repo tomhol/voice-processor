@@ -7,7 +7,8 @@ An AI-powered pipeline to transcribe, translate, and re-synthesize audio. This t
 - **Robust Transcription:** Uses `faster-whisper` (including `large-v3` support) to extract text and precise timestamps from even low-quality audio.
 - **Offline Translation:** Uses `argostranslate` (OpenNMT/CTranslate2) for private, offline translation between languages (e.g., English to Czech).
 - **Advanced Synthesis:** 
-  - **F5-TTS:** Flow-matching engine for high-quality English synthesis.
+  - **F5-TTS & E2-TTS:** Flow-matching engines for high-quality English synthesis.
+  - **Auto-fetching Models:** Automatically downloads checkpoints from Hugging Face Hub if not found locally.
   - **Self-Cloning:** Can use the original noisy segments as a voice reference to preserve the speaker's tone while removing noise.
   - **Global Reference:** Provide a "Gold Standard" clean sample (`--ref-audio-file`) to completely re-voice the track.
   - **XTTS v2 Support:** Placeholder architecture for multi-lingual synthesis.
@@ -20,8 +21,8 @@ An AI-powered pipeline to transcribe, translate, and re-synthesize audio. This t
    ```bash
    pip install -r requirements.txt
    ```
-3. **Download Model Checkpoints:**
-   Place F5-TTS checkpoints in `ckpts/F5TTS_v1_Base/`.
+3. **Model Checkpoints:**
+   The tool will automatically download models from Hugging Face on first use. Alternatively, place them in `ckpts/`.
 
 ## Usage
 
@@ -52,6 +53,12 @@ python regenerate_audio.py --input-file noisy_track.wav \
     --synthesize-only --data-file transcription.yaml
 ```
 
+### 5. Using E2-TTS Variation
+Use the alternative E2-TTS model:
+```bash
+python regenerate_audio.py --input-file noisy_track.wav --f5-model-type E2-TTS
+```
+
 ## Arguments
 
 - `--input-file`: (Required) Path to source audio.
@@ -62,6 +69,8 @@ python regenerate_audio.py --input-file noisy_track.wav \
 - `--tts-engine`: Choose between `f5-tts` or `xtts`.
 - `--ref-audio-file`: Path to a high-quality voice sample.
 - `--ref-text-file`: Path to a `.txt` file containing the reference sample's text.
+- `--f5-hf-repo`: HuggingFace repo ID (default: `SWivid/F5-TTS`).
+- `--f5-model-type`: Choose `F5-TTS` or `E2-TTS`.
 
 ## Dependencies
 
@@ -70,3 +79,4 @@ python regenerate_audio.py --input-file noisy_track.wav \
 - `argostranslate`
 - `pydub`
 - `PyYAML`
+- `huggingface_hub`
