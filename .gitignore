@@ -1,0 +1,6 @@
+ckpts/
+*.wav
+*.safetensors
+*.pt
+__pycache__/
+.env
