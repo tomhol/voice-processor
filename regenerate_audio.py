@@ -47,20 +47,46 @@ def transcribe(input_file, language=None, model_size="base"):
     
     return transcribed_segments
 
-def translate_segments(segments, target_lang):
+def translate_segments(segments, target_lang, source_lang="en"):
     """
-    Placeholder for translation logic. 
-    In a real scenario, you could use Helsinki-NLP models via CTranslate2 or an LLM.
+    Translates segments using argostranslate (CTranslate2 NMT).
     """
-    print(f"\n[Translation] Translating segments to {target_lang}...")
-    # For now, we just prepend a placeholder to show it went through this function
-    # You can replace this with: 
-    # from easynmt import EasyNMT; model = EasyNMT('opus-mt'); ...
+    import argostranslate.package
+    import argostranslate.translate
+
+    print(f"\n[Translation] Preparing NMT model for {source_lang} -> {target_lang}...")
+    
+    # Update package index
+    try:
+        argostranslate.package.update_package_index()
+    except Exception as e:
+        print(f"Warning: Could not update package index: {e}")
+
+    # Find and install package
+    available_packages = argostranslate.package.get_available_packages()
+    package_to_install = next(
+        filter(
+            lambda x: x.from_code == source_lang and x.to_code == target_lang,
+            available_packages
+        ), None
+    )
+
+    if package_to_install:
+        print(f"Installing translation package: {package_to_install}...")
+        argostranslate.package.install_from_path(package_to_install.download())
+    else:
+        # Check if already installed
+        installed_packages = argostranslate.package.get_installed_packages()
+        if not any(x.from_code == source_lang and x.to_code == target_lang for x in installed_packages):
+            raise ValueError(f"No translation package found for {source_lang} -> {target_lang}")
+
+    print(f"Translating {len(segments)} segments...")
     for seg in segments:
         original_text = seg["text"]
-        # Dummy translation logic
-        seg["text"] = f"[Translated to {target_lang}]: {original_text}"
-        print(f"  {original_text} -> {seg['text']}")
+        translated_text = argostranslate.translate.translate(original_text, source_lang, target_lang)
+        seg["text"] = translated_text
+        print(f"  {original_text} -> {translated_text}")
+    
     return segments
 
 def save_data(data, file_path):
