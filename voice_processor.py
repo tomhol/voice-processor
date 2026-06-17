@@ -25,6 +25,30 @@ os.environ["CURL_CA_BUNDLE"] = ""
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+def _segment_bounds_ms(seg):
+    start_ms = max(0, int(round(seg["start"] * 1000)))
+    end_ms = max(start_ms + 1, int(round(seg["end"] * 1000)))
+    return start_ms, end_ms
+
+
+def _audio_duration_seconds(audio):
+    return len(audio) / 1000.0 if hasattr(audio, "__len__") else 0.0
+
+
+def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0):
+    start_ms, end_ms = _segment_bounds_ms(seg)
+    slot_duration_ms = max(1, end_ms - start_ms)
+    generated_duration_ms = len(audio_chunk)
+
+    if generated_duration_ms <= slot_duration_ms:
+        return audio_chunk, speed_hint
+
+    ratio = generated_duration_ms / slot_duration_ms
+    new_speed = max(0.1, min(10.0, speed_hint * ratio))
+    return audio_chunk, new_speed
+
+
 def transcribe(input_file, language=None, model_size="base"):
     print(f"\n[Step 1] Loading Faster-Whisper to transcribe {input_file}...")
     compute_type = "float16" if DEVICE == "cuda" else "int8"
@@ -195,13 +219,40 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
             base_audio[ref_start_ms:ref_end_ms].export(temp_ref_path, format="wav")
             current_ref_path = temp_ref_path
 
-        wav_out, sr_out, _ = infer_process(current_ref_path, current_ref_text, seg["text"], dit_model, vocoder, device=DEVICE)
+        segment_duration = max(seg["end"] - seg["start"], 0.05)
+        speed = 1.0
+        wav_out, sr_out, _ = infer_process(
+            current_ref_path,
+            current_ref_text,
+            seg["text"],
+            dit_model,
+            vocoder,
+            device=DEVICE,
+            speed=speed,
+            fix_duration=segment_duration,
+        )
         
         temp_gen_path = f"temp_gen_{idx}.wav"
         sf.write(temp_gen_path, wav_out, sr_out)
         
         generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        target_position_ms = int(seg["start"] * 1000)
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed)
+        if adjusted_speed != speed:
+            wav_out, sr_out, _ = infer_process(
+                current_ref_path,
+                current_ref_text,
+                seg["text"],
+                dit_model,
+                vocoder,
+                device=DEVICE,
+                speed=adjusted_speed,
+                fix_duration=segment_duration,
+            )
+            sf.write(temp_gen_path, wav_out, sr_out)
+            generated_chunk = AudioSegment.from_wav(temp_gen_path)
+            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed)
+        
+        target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
         
         if os.path.exists(temp_ref_path): os.remove(temp_ref_path)
@@ -248,15 +299,29 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         temp_gen_path = f"temp_gen_xtts_{idx}.wav"
         
         # XTTS synthesis
+        speed = 1.0
         tts.tts_to_file(
             text=seg["text"],
             speaker_wav=current_ref_path,
             language=language,
-            file_path=temp_gen_path
+            file_path=temp_gen_path,
+            speed=speed,
         )
         
         generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        target_position_ms = int(seg["start"] * 1000)
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed)
+        if adjusted_speed != speed:
+            tts.tts_to_file(
+                text=seg["text"],
+                speaker_wav=current_ref_path,
+                language=language,
+                file_path=temp_gen_path,
+                speed=adjusted_speed,
+            )
+            generated_chunk = AudioSegment.from_wav(temp_gen_path)
+            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed)
+        
+        target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
         
         if not ref_audio and os.path.exists(temp_ref_path):
