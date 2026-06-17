@@ -27,41 +27,42 @@ An AI-powered pipeline to transcribe, translate, and re-synthesize audio. This t
 ### 1. English Voice Restoration (Self-Cloning)
 Transcribe noisy audio and re-synthesize it using the speaker's own voice (denoising):
 ```bash
-python regenerate_audio.py --input-file noisy_track.wav --whisper-model large-v3
+python voice_processor.py --input-file noisy_track.wav --whisper-model large-v3
 ```
 
 ### 2. Voice Dubbing (Translation to Czech)
 Translate English audio to Czech and save the transcription data:
 ```bash
-python regenerate_audio.py --input-file noisy_track.wav --output-language cs --transcribe-only
+python voice_processor.py --input-file noisy_track.wav --output-language cs --transcribe-only
 ```
 
 ### 3. Professional Re-voicing (Gold Standard)
 Use a clean reference clip to dub the entire track:
 ```bash
-python regenerate_audio.py --input-file noisy_track.wav \
+python voice_processor.py --input-file noisy_track.wav \
     --ref-audio-file clean_sample.wav \
     --ref-text-file clean_sample.txt
 ```
 
 ### 4. Modular Mode (Synthesize from YAML)
-Tune synthesis parameters without re-running the transcription:
+Tune synthesis parameters without re-running the transcription. If doing voice cloning without `--input-file`, provide a global reference via `--ref-audio-file`:
 ```bash
-python regenerate_audio.py --input-file noisy_track.wav \
-    --synthesize-only --data-file transcription.yaml
+python voice_processor.py --synthesize-only --transcript-file transcription.yaml \
+    --ref-audio-file clean_sample.wav \
+    --ref-text-file clean_sample.txt
 ```
 
 ### 5. Using E2-TTS Variation
 Use the alternative E2-TTS model:
 ```bash
-python regenerate_audio.py --input-file noisy_track.wav --f5-model-type E2-TTS
+python voice_processor.py --input-file noisy_track.wav --f5-model-type E2-TTS
 ```
 
 ## Arguments
 
-- `--input-file`: (Required) Path to source audio.
+- `--input-file`: Path to source audio (required unless `--synthesize-only` is specified).
 - `--output-file`: Output path (default: `regenerated_track.wav`).
-- `--data-file`: Path to save/load metadata (default: `transcription.yaml`).
+- `--transcript-file`: Path to save/load metadata (default: `transcription.yaml`, mandatory when `--synthesize-only` is used).
 - `--output-language`: Target language code (e.g., `cs`, `de`, `fr`).
 - `--whisper-model`: Whisper model size (`base`, `small`, `medium`, `large-v3`).
 - `--tts-engine`: Choose between `f5-tts` or `xtts`.

@@ -172,7 +172,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
     dit_model = load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path, device=DEVICE)
     vocoder = load_vocoder()
 
-    base_audio = AudioSegment.from_file(input_file)
+    base_audio = AudioSegment.from_file(input_file) if input_file else None
     max_end = max(seg["end"] for seg in transcribed_segments)
     final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
@@ -188,6 +188,8 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
             current_ref_text = ref_text if ref_text else seg["text"] 
         else:
             # Self-cloning mode (original behavior)
+            if not base_audio:
+                raise ValueError("Self-cloning requires --input-file to extract reference audio segments.")
             ref_start_ms = int(seg["start"] * 1000)
             ref_end_ms = int(seg["end"] * 1000)
             base_audio[ref_start_ms:ref_end_ms].export(temp_ref_path, format="wav")
@@ -223,9 +225,9 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
 
 def main():
     parser = argparse.ArgumentParser(description="Regenerate audio with Translation and Multiple TTS Engines")
-    parser.add_argument("--input-file", type=str, required=True, help="Input noisy WAV file")
+    parser.add_argument("--input-file", type=str, help="Input noisy WAV file")
     parser.add_argument("--output-file", type=str, default="regenerated_track.wav", help="Output clean WAV file")
-    parser.add_argument("--data-file", type=str, default="transcription.yaml", help="Data file (JSON/YAML)")
+    parser.add_argument("--transcript-file", type=str, help="Transcript file (JSON/YAML)")
     
     # Language args
     parser.add_argument("--input-language", type=str, help="Language of source audio")
@@ -248,6 +250,19 @@ def main():
     mode_group.add_argument("--synthesize-only", action="store_true")
 
     args = parser.parse_args()
+
+    # Validate arguments based on mode
+    if args.synthesize_only:
+        if not args.transcript_file:
+            parser.error("--transcript-file is mandatory when --synthesize-only is used.")
+    else:
+        # Transcribe-only or full pipeline
+        if not args.input_file:
+            parser.error("--input-file is required unless --synthesize-only is used.")
+
+    # Default transcript file if not specified
+    if not args.transcript_file:
+        args.transcript_file = "transcription.yaml"
     print(f"Using device: {DEVICE}")
 
     # Load reference text if provided
@@ -267,11 +282,11 @@ def main():
         if args.output_language:
             transcribed_segments = translate_segments(transcribed_segments, args.output_language)
             
-        save_data(transcribed_segments, args.data_file)
+        save_data(transcribed_segments, args.transcript_file)
     
     if do_synthesize:
         if not transcribed_segments:
-            transcribed_segments = load_data(args.data_file)
+            transcribed_segments = load_data(args.transcript_file)
         
         if args.tts_engine == "f5-tts":
             final_audio = synthesize_f5(args.input_file, transcribed_segments, 
