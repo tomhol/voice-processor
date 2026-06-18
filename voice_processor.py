@@ -19,8 +19,6 @@ try:
 except ImportError:
     F5_TTS_AVAILABLE = False
 
-XTTS_TEMPERATURE = 0.6  # trying to avoid weird artifacts while still allowing some variation, but this can be adjusted or made a parameter later
-
 # Global lock for CUDA operations to prevent potential race conditions
 CUDA_LOCK = threading.Lock()
 
@@ -449,7 +447,8 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                 language=language,
                 file_path=temp_gen_path,
                 speed=speed,
-                temperature=XTTS_TEMPERATURE,
+                # temperature=XTTS_TEMPERATURE,
+                # repetition_penalty=XTTS_REPETITION_PENALTY,
             )
         
         generated_chunk = AudioSegment.from_wav(temp_gen_path)
@@ -470,7 +469,8 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                     language=language,
                     file_path=temp_gen_path,
                     speed=adjusted_speed,
-                    temperature=XTTS_TEMPERATURE,
+                    # temperature=XTTS_TEMPERATURE,
+                    # repetition_penalty=XTTS_REPETITION_PENALTY,
                 )
             generated_chunk = AudioSegment.from_wav(temp_gen_path)
             # Re-verify and potentially trim if still slightly over
