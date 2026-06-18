@@ -188,7 +188,7 @@ def get_f5_model(repo_id="SWivid/F5-TTS", model_type="F5-TTS"):
         #     return local_ckpt, local_vocab, config
         raise RuntimeError(f"Could not fetch F5-TTS model: {e}")
 
-def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None):
+def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None, checkpoint_freq=0):
     if not F5_TTS_AVAILABLE:
         raise ImportError("F5-TTS is not installed or available.")
     
@@ -260,9 +260,15 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
         if os.path.exists(temp_ref_path): os.remove(temp_ref_path)
         if os.path.exists(temp_gen_path): os.remove(temp_gen_path)
 
+        # Checkpoint logic
+        if checkpoint_freq > 0 and (idx + 1) % checkpoint_freq == 0:
+            checkpoint_path = f"checkpoint_f5_{idx+1}.wav"
+            print(f"  [Checkpoint] Saving intermediate audio to {checkpoint_path}...")
+            final_timeline.export(checkpoint_path, format="wav")
+
     return final_timeline
 
-def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en"):
+def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en", checkpoint_freq=0):
     from TTS.api import TTS
 
     print(f"\n[XTTS] Initializing Engine (Language: {language})...")
@@ -331,6 +337,12 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         if os.path.exists(temp_gen_path):
             os.remove(temp_gen_path)
 
+        # Checkpoint logic
+        if checkpoint_freq > 0 and (idx + 1) % checkpoint_freq == 0:
+            checkpoint_path = f"checkpoint_xtts_{idx+1}.wav"
+            print(f"  [Checkpoint] Saving intermediate audio to {checkpoint_path}...")
+            final_timeline.export(checkpoint_path, format="wav")
+
     return final_timeline
 
 def main():
@@ -354,6 +366,8 @@ def main():
     # F5-TTS specific args
     parser.add_argument("--f5-hf-repo", type=str, default="SWivid/F5-TTS", help="HuggingFace repo ID for F5-TTS")
     parser.add_argument("--f5-model-type", type=str, default="F5-TTS", choices=["F5-TTS", "E2-TTS"], help="Model variation to use")
+
+    parser.add_argument("--checkpoint-freq", type=int, default=10, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--transcribe-only", action="store_true")
@@ -410,12 +424,13 @@ def main():
         if args.tts_engine == "f5-tts":
             final_audio = synthesize_f5(args.input_file, transcribed_segments, 
                                        repo_id=args.f5_hf_repo, model_type=args.f5_model_type,
-                                       ref_audio=args.ref_audio_file, ref_text=ref_text_content)
+                                       ref_audio=args.ref_audio_file, ref_text=ref_text_content,
+                                       checkpoint_freq=args.checkpoint_freq)
         elif args.tts_engine == "xtts":
             target_lang = args.output_language if args.output_language else (args.input_language if args.input_language else "en")
             final_audio = synthesize_xtts(args.input_file, transcribed_segments, 
                                          ref_audio=args.ref_audio_file, ref_text=ref_text_content, 
-                                         language=target_lang)
+                                         language=target_lang, checkpoint_freq=args.checkpoint_freq)
         
         final_audio.export(args.output_file, format="wav")
         print(f"\n[Success] Output saved to: {args.output_file}")
