@@ -55,26 +55,45 @@ def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0, max_duration_ms=None):
     return audio_chunk, new_speed
 
 
-def transcribe(input_file, language=None, model_size="base"):
+def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
     print(f"\n[Step 1] Loading Faster-Whisper to transcribe {input_file}...")
+    
+    # Slice audio if needed
+    audio = AudioSegment.from_file(input_file)
+    full_duration = len(audio) / 1000.0
+    
+    actual_end = time_end if time_end is not None else full_duration
+    if time_start > 0 or time_end is not None:
+        print(f"Slicing audio: {time_start}s to {actual_end}s")
+        audio_slice = audio[time_start * 1000 : int(actual_end * 1000)]
+        temp_slice_path = "temp_whisper_slice.wav"
+        audio_slice.export(temp_slice_path, format="wav")
+        process_file = temp_slice_path
+    else:
+        process_file = input_file
+
     compute_type = "float16" if DEVICE == "cuda" else "int8"
     whisper_model = WhisperModel(model_size, device=DEVICE, compute_type=compute_type)
 
     print(f"Processing audio segments and timings (language={language if language else 'auto'})...")
-    segments, info = whisper_model.transcribe(input_file, word_timestamps=True, language=language)
+    segments, info = whisper_model.transcribe(process_file, word_timestamps=True, language=language)
     print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
 
     transcribed_segments = []
     for segment in segments:
         transcribed_segments.append({
             "text": segment.text.strip(),
-            "start": float(segment.start),
-            "end": float(segment.end)
+            "start": float(segment.start) + time_start,
+            "end": float(segment.end) + time_start
         })
-        print(f"[{segment.start:05.2f}s -> {segment.end:05.2f}s]: {segment.text}")
+        print(f"[{float(segment.start) + time_start:05.2f}s -> {float(segment.end) + time_start:05.2f}s]: {segment.text}")
+
+    if process_file == "temp_whisper_slice.wav":
+        if os.path.exists("temp_whisper_slice.wav"):
+            os.remove("temp_whisper_slice.wav")
 
     if not transcribed_segments:
-        raise ValueError("No speech detected in the audio file.")
+        raise ValueError("No speech detected in the audio file slice.")
     
     return transcribed_segments, info.language
 
@@ -245,7 +264,7 @@ def get_f5_model(repo_id="SWivid/F5-TTS", model_type="F5-TTS"):
         #     return local_ckpt, local_vocab, config
         raise RuntimeError(f"Could not fetch F5-TTS model: {e}")
 
-def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None, checkpoint_freq=0):
+def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_audio=None, ref_text=None, checkpoint_freq=0, target_duration_ms=None):
     if not F5_TTS_AVAILABLE:
         raise ImportError("F5-TTS is not installed or available.")
     
@@ -256,8 +275,12 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
     vocoder = load_vocoder()
 
     base_audio = AudioSegment.from_file(input_file) if input_file else None
-    max_end = max(seg["end"] for seg in transcribed_segments)
-    final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
+    
+    if target_duration_ms:
+        final_timeline = AudioSegment.silent(duration=target_duration_ms)
+    else:
+        max_end = max(seg["end"] for seg in transcribed_segments) if transcribed_segments else 0
+        final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
     for idx, seg in enumerate(transcribed_segments):
         print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
@@ -334,7 +357,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
 
     return final_timeline
 
-def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en", checkpoint_freq=0):
+def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en", checkpoint_freq=0, target_duration_ms=None):
     from TTS.api import TTS
 
     print(f"\n[XTTS] Initializing Engine (Language: {language})...")
@@ -350,8 +373,12 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         tts.to(DEVICE)
 
     base_audio = AudioSegment.from_file(input_file) if input_file else None
-    max_end = max(seg["end"] for seg in transcribed_segments)
-    final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
+    
+    if target_duration_ms:
+        final_timeline = AudioSegment.silent(duration=target_duration_ms)
+    else:
+        max_end = max(seg["end"] for seg in transcribed_segments) if transcribed_segments else 0
+        final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
     for idx, seg in enumerate(transcribed_segments):
         print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
@@ -448,6 +475,9 @@ def main():
 
     parser.add_argument("--checkpoint-freq", type=int, default=10, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
 
+    parser.add_argument("--time-start", type=int, default=0, help="Start time in seconds for processing slice")
+    parser.add_argument("--time-end", type=int, help="End time in seconds for processing slice")
+
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--transcribe-only", action="store_true")
     mode_group.add_argument("--synthesize-only", action="store_true")
@@ -490,6 +520,12 @@ def main():
 
     if args.translate_only:
         transcribed_segments = load_data(args.transcript_file)
+        
+        # Filter segments based on time slice
+        if args.time_start > 0 or args.time_end is not None:
+            print(f"Filtering segments for time slice: {args.time_start}s to {args.time_end}s")
+            transcribed_segments = [s for s in transcribed_segments if s["start"] >= args.time_start and (args.time_end is None or s["end"] <= args.time_end)]
+
         source_lang = args.input_language if args.input_language else "en"
         
         transcribed_segments = translate_segments(
@@ -509,10 +545,22 @@ def main():
     transcribed_segments = None
     do_transcribe = not args.synthesize_only
     do_synthesize = not args.transcribe_only
+    target_duration_ms = None
 
     if do_transcribe:
-        transcribed_segments, detected_lang = transcribe(args.input_file, language=args.input_language, model_size=args.whisper_model)
+        transcribed_segments, detected_lang = transcribe(
+            args.input_file, 
+            language=args.input_language, 
+            model_size=args.whisper_model,
+            time_start=args.time_start,
+            time_end=args.time_end
+        )
         
+        # Determine target duration for synthesis
+        if args.input_file:
+            audio = AudioSegment.from_file(args.input_file)
+            target_duration_ms = len(audio)
+
         if args.output_language:
             # Save original transcription first
             import copy
@@ -536,17 +584,32 @@ def main():
     if do_synthesize:
         if not transcribed_segments:
             transcribed_segments = load_data(args.transcript_file)
-        
+            
+            # Determine target duration from input file or full segments before filtering
+            if args.input_file and os.path.exists(args.input_file):
+                audio = AudioSegment.from_file(args.input_file)
+                target_duration_ms = len(audio)
+            else:
+                max_end = max(s["end"] for s in transcribed_segments) if transcribed_segments else 0
+                target_duration_ms = int(max_end * 1000) + 2000
+
+            # Filter segments based on time slice
+            if args.time_start > 0 or args.time_end is not None:
+                print(f"Filtering segments for time slice: {args.time_start}s to {args.time_end}s")
+                transcribed_segments = [s for s in transcribed_segments if s["start"] >= args.time_start and (args.time_end is None or s["end"] <= args.time_end)]
+
         if args.tts_engine == "f5-tts":
             final_audio = synthesize_f5(args.input_file, transcribed_segments, 
                                        repo_id=args.f5_hf_repo, model_type=args.f5_model_type,
                                        ref_audio=args.ref_audio_file, ref_text=ref_text_content,
-                                       checkpoint_freq=args.checkpoint_freq)
+                                       checkpoint_freq=args.checkpoint_freq,
+                                       target_duration_ms=target_duration_ms)
         elif args.tts_engine == "xtts":
             target_lang = args.output_language if args.output_language else (args.input_language if args.input_language else "en")
             final_audio = synthesize_xtts(args.input_file, transcribed_segments, 
                                          ref_audio=args.ref_audio_file, ref_text=ref_text_content, 
-                                         language=target_lang, checkpoint_freq=args.checkpoint_freq)
+                                         language=target_lang, checkpoint_freq=args.checkpoint_freq,
+                                         target_duration_ms=target_duration_ms)
         
         final_audio.export(args.output_file, format="wav")
         print(f"\n[Success] Output saved to: {args.output_file}")
