@@ -37,15 +37,20 @@ def _audio_duration_seconds(audio):
     return len(audio) / 1000.0 if hasattr(audio, "__len__") else 0.0
 
 
-def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0):
+def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0, max_duration_ms=None):
     start_ms, end_ms = _segment_bounds_ms(seg)
     slot_duration_ms = max(1, end_ms - start_ms)
     generated_duration_ms = len(audio_chunk)
 
-    if generated_duration_ms <= slot_duration_ms:
+    # Determine the actual available space (slot + gap to next)
+    limit_ms = max_duration_ms if max_duration_ms is not None else slot_duration_ms
+
+    if generated_duration_ms <= limit_ms:
+        # Keep natural pace if it fits in the available space
         return audio_chunk, speed_hint
 
-    ratio = generated_duration_ms / slot_duration_ms
+    # Speed up to fit into the limit
+    ratio = generated_duration_ms / limit_ms
     new_speed = max(0.1, min(10.0, speed_hint * ratio))
     return audio_chunk, new_speed
 
@@ -73,10 +78,62 @@ def transcribe(input_file, language=None, model_size="base"):
     
     return transcribed_segments, info.language
 
-def translate_segments(segments, target_lang, source_lang="en"):
+def translate_segments_llm(segments, target_lang, source_lang="en", context=None):
     """
-    Translates segments using argostranslate (CTranslate2 NMT).
+    Translates segments using Google Gemini LLM.
+    Expects GOOGLE_API_KEY environment variable.
     """
+    import google.generativeai as genai
+    
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        print("Warning: GOOGLE_API_KEY not found. Skipping LLM translation.")
+        return segments
+
+    print(f"\n[Translation] Preparing LLM (Gemini) for {source_lang} -> {target_lang}...")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    # Prepare the prompt
+    texts = [seg["text"] for seg in segments]
+    
+    prompt = f"Translate the following list of strings from {source_lang} to {target_lang}.\n"
+    if context:
+        prompt += f"Context: {context}\n"
+    prompt += "Provide the translation as a JSON list of strings only, preserving the order and length.\n"
+    prompt += json.dumps(texts, ensure_ascii=False)
+    
+    try:
+        response = model.generate_content(prompt)
+        text_response = response.text
+        
+        # Strip markdown if present
+        if "```json" in text_response:
+            text_response = text_response.split("```json")[1].split("```")[0].strip()
+        elif "```" in text_response:
+             text_response = text_response.split("```")[1].split("```")[0].strip()
+             
+        translated_texts = json.loads(text_response)
+        
+        if len(translated_texts) != len(segments):
+            print(f"Warning: LLM returned {len(translated_texts)} segments, but expected {len(segments)}.")
+            return segments
+            
+        for seg, trans in zip(segments, translated_texts):
+            seg["text"] = trans
+            
+    except Exception as e:
+        print(f"Error during LLM translation: {e}")
+    
+    return segments
+
+def translate_segments(segments, target_lang, source_lang="en", engine="nmt", context=None):
+    """
+    Translates segments using argostranslate (CTranslate2 NMT) or LLM.
+    """
+    if engine == "llm":
+        return translate_segments_llm(segments, target_lang, source_lang, context)
+
     import argostranslate.package
     import argostranslate.translate
 
@@ -205,6 +262,15 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
     for idx, seg in enumerate(transcribed_segments):
         print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
         
+        # Calculate available space including gap to next segment
+        current_start_ms, current_end_ms = _segment_bounds_ms(seg)
+        if idx + 1 < len(transcribed_segments):
+            next_start_ms, _ = _segment_bounds_ms(transcribed_segments[idx + 1])
+            max_duration_ms = max(1, next_start_ms - current_start_ms)
+        else:
+            # For the last segment, use its own duration or a reasonable buffer
+            max_duration_ms = None 
+
         temp_ref_path = f"temp_ref_{idx}.wav"
         current_ref_text = seg["text"] # Default to the segment text for self-cloning
 
@@ -238,7 +304,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
         sf.write(temp_gen_path, wav_out, sr_out)
         
         generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed)
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
         if adjusted_speed != speed:
             wav_out, sr_out, _ = infer_process(
                 current_ref_path,
@@ -252,7 +318,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
             )
             sf.write(temp_gen_path, wav_out, sr_out)
             generated_chunk = AudioSegment.from_wav(temp_gen_path)
-            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed)
+            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed, max_duration_ms=max_duration_ms)
         
         target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
@@ -290,6 +356,15 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
     for idx, seg in enumerate(transcribed_segments):
         print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
         
+        # Calculate available space including gap to next segment
+        current_start_ms, current_end_ms = _segment_bounds_ms(seg)
+        if idx + 1 < len(transcribed_segments):
+            next_start_ms, _ = _segment_bounds_ms(transcribed_segments[idx + 1])
+            max_duration_ms = max(1, next_start_ms - current_start_ms)
+        else:
+            # For the last segment, use its own duration or a reasonable buffer
+            max_duration_ms = None 
+
         temp_ref_path = f"temp_ref_xtts_{idx}.wav"
         
         if ref_audio:
@@ -317,7 +392,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         )
         
         generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed)
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
         if adjusted_speed != speed:
             tts.tts_to_file(
                 text=seg["text"],
@@ -327,7 +402,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                 speed=adjusted_speed,
             )
             generated_chunk = AudioSegment.from_wav(temp_gen_path)
-            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed)
+            generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed, max_duration_ms=max_duration_ms)
         
         target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
@@ -367,22 +442,32 @@ def main():
     parser.add_argument("--f5-hf-repo", type=str, default="SWivid/F5-TTS", help="HuggingFace repo ID for F5-TTS")
     parser.add_argument("--f5-model-type", type=str, default="F5-TTS", choices=["F5-TTS", "E2-TTS"], help="Model variation to use")
 
+    # Translation Engine args
+    parser.add_argument("--translation-engine", type=str, default="nmt", choices=["nmt", "llm"], help="Translation engine to use")
+    parser.add_argument("--translation-context-file", type=str, help="Context for LLM-based translation")
+
     parser.add_argument("--checkpoint-freq", type=int, default=10, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--transcribe-only", action="store_true")
     mode_group.add_argument("--synthesize-only", action="store_true")
+    mode_group.add_argument("--translate-only", action="store_true")
 
     args = parser.parse_args()
 
     # Validate arguments based on mode
-    if args.synthesize_only:
+    if args.translate_only:
+        if not args.transcript_file:
+            parser.error("--transcript-file is mandatory when --translate-only is used.")
+        if not args.output_language:
+            parser.error("--output-language is mandatory when --translate-only is used.")
+    elif args.synthesize_only:
         if not args.transcript_file:
             parser.error("--transcript-file is mandatory when --synthesize-only is used.")
     else:
         # Transcribe-only or full pipeline
         if not args.input_file:
-            parser.error("--input-file is required unless --synthesize-only is used.")
+            parser.error("--input-file is required unless --synthesize-only or --translate-only is used.")
 
     # Default transcript file if not specified
     if not args.transcript_file:
@@ -395,6 +480,31 @@ def main():
         print(f"Loading reference text from {args.ref_text_file}...")
         with open(args.ref_text_file, 'r', encoding='utf-8') as f:
             ref_text_content = f.read().strip()
+
+    # Load translation context if provided
+    translation_context = None
+    if args.translation_context_file:
+        print(f"Loading translation context from {args.translation_context_file}...")
+        with open(args.translation_context_file, 'r', encoding='utf-8') as f:
+            translation_context = f.read().strip()
+
+    if args.translate_only:
+        transcribed_segments = load_data(args.transcript_file)
+        source_lang = args.input_language if args.input_language else "en"
+        
+        transcribed_segments = translate_segments(
+            transcribed_segments, 
+            args.output_language, 
+            source_lang=source_lang,
+            engine=args.translation_engine,
+            context=translation_context
+        )
+        
+        # Auto-generate output filename
+        base, ext = os.path.splitext(args.transcript_file)
+        output_filename = f"{base}_translated_to_{args.output_language}{ext}"
+        save_data(transcribed_segments, output_filename)
+        return
 
     transcribed_segments = None
     do_transcribe = not args.synthesize_only
@@ -413,7 +523,13 @@ def main():
 
             # Translate
             source_lang = args.input_language if args.input_language else detected_lang
-            transcribed_segments = translate_segments(transcribed_segments, args.output_language, source_lang=source_lang)
+            transcribed_segments = translate_segments(
+                transcribed_segments, 
+                args.output_language, 
+                source_lang=source_lang,
+                engine=args.translation_engine,
+                context=translation_context
+            )
             
         save_data(transcribed_segments, args.transcript_file)
     

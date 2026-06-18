@@ -7,3 +7,4 @@ PyYAML
 argostranslate
 coqui-tts
 huggingface_hub
+google-generativeai
