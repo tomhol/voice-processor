@@ -6,6 +6,8 @@ import json
 import yaml
 import torch
 import copy
+import threading
+import numpy as np
 import soundfile as sf
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
@@ -16,6 +18,11 @@ try:
     F5_TTS_AVAILABLE = True
 except ImportError:
     F5_TTS_AVAILABLE = False
+
+XTTS_TEMPERATURE = 0.6  # trying to avoid weird artifacts while still allowing some variation, but this can be adjusted or made a parameter later
+
+# Global lock for CUDA operations to prevent potential race conditions
+CUDA_LOCK = threading.Lock()
 
 # Force Python to create an unverified context globally
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -283,16 +290,22 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
         final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
     for idx, seg in enumerate(transcribed_segments):
-        print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
-        
         # Calculate available space including gap to next segment
         current_start_ms, current_end_ms = _segment_bounds_ms(seg)
+        gap_ms = 0
         if idx + 1 < len(transcribed_segments):
             next_start_ms, _ = _segment_bounds_ms(transcribed_segments[idx + 1])
+            gap_ms = max(0, next_start_ms - current_end_ms)
             max_duration_ms = max(1, next_start_ms - current_start_ms)
         else:
-            # For the last segment, use its own duration or a reasonable buffer
+            # For the last segment, we allow it to be slightly longer if needed, 
+            # but still use its own duration as a hint for compression if it's way off.
             max_duration_ms = None 
+
+        print(f"\n[F5-TTS] Synthesizing section {idx+1}/{len(transcribed_segments)}...")
+        print(f"  Range: {seg['start']:.2f}s -> {seg['end']:.2f}s (len: {seg['end']-seg['start']:.2f}s)")
+        if max_duration_ms:
+            print(f"  Slot + Gap: {max_duration_ms/1000:.2f}s (Gap: {gap_ms/1000:.2f}s)")
 
         temp_ref_path = f"temp_ref_{idx}.wav"
         current_ref_text = seg["text"] # Default to the segment text for self-cloning
@@ -310,25 +323,8 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
             base_audio[ref_start_ms:ref_end_ms].export(temp_ref_path, format="wav")
             current_ref_path = temp_ref_path
 
-        segment_duration = max(seg["end"] - seg["start"], 0.05)
         speed = 1.0
-        wav_out, sr_out, _ = infer_process(
-            current_ref_path,
-            current_ref_text,
-            seg["text"],
-            dit_model,
-            vocoder,
-            device=DEVICE,
-            speed=speed,
-            fix_duration=segment_duration,
-        )
-        
-        temp_gen_path = f"temp_gen_{idx}.wav"
-        sf.write(temp_gen_path, wav_out, sr_out)
-        
-        generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
-        if adjusted_speed != speed:
+        with CUDA_LOCK:
             wav_out, sr_out, _ = infer_process(
                 current_ref_path,
                 current_ref_text,
@@ -336,12 +332,43 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
                 dit_model,
                 vocoder,
                 device=DEVICE,
-                speed=adjusted_speed,
-                fix_duration=segment_duration,
+                speed=speed,
+                # We remove fix_duration for first pass to avoid forced silence if text is too long
             )
+        
+        if wav_out is None or (isinstance(wav_out, np.ndarray) and wav_out.size > 0 and np.abs(wav_out).max() < 1e-5):
+            print(f"  [Warning] F5-TTS produced silence for segment {idx+1}!")
+
+        temp_gen_path = f"temp_gen_{idx}.wav"
+        sf.write(temp_gen_path, wav_out, sr_out)
+        
+        generated_chunk = AudioSegment.from_wav(temp_gen_path)
+        gen_len_ms = len(generated_chunk)
+        
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
+        
+        limit_ms = max_duration_ms if max_duration_ms is not None else (current_end_ms - current_start_ms)
+        is_compressing = adjusted_speed != speed
+        
+        print(f"  Generated length: {gen_len_ms/1000:.2f}s")
+        if is_compressing:
+            print(f"  [Compression] Required ratio: {adjusted_speed:.2f}x (to fit in {limit_ms/1000:.2f}s)")
+            with CUDA_LOCK:
+                wav_out, sr_out, _ = infer_process(
+                    current_ref_path,
+                    current_ref_text,
+                    seg["text"],
+                    dit_model,
+                    vocoder,
+                    device=DEVICE,
+                    speed=adjusted_speed,
+                )
             sf.write(temp_gen_path, wav_out, sr_out)
             generated_chunk = AudioSegment.from_wav(temp_gen_path)
+            # Re-verify and potentially trim if still slightly over
             generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed, max_duration_ms=max_duration_ms)
+        else:
+            print(f"  [Compression] Not needed (fits in {limit_ms/1000:.2f}s)")
         
         target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
@@ -381,16 +408,21 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
     for idx, seg in enumerate(transcribed_segments):
-        print(f"Synthesizing section {idx+1}/{len(transcribed_segments)}...")
-        
         # Calculate available space including gap to next segment
         current_start_ms, current_end_ms = _segment_bounds_ms(seg)
+        gap_ms = 0
         if idx + 1 < len(transcribed_segments):
             next_start_ms, _ = _segment_bounds_ms(transcribed_segments[idx + 1])
+            gap_ms = max(0, next_start_ms - current_end_ms)
             max_duration_ms = max(1, next_start_ms - current_start_ms)
         else:
-            # For the last segment, use its own duration or a reasonable buffer
+            # For the last segment, we allow it to be slightly longer if needed
             max_duration_ms = None 
+
+        print(f"\n[XTTS] Synthesizing section {idx+1}/{len(transcribed_segments)}...")
+        print(f"  Range: {seg['start']:.2f}s -> {seg['end']:.2f}s (len: {seg['end']-seg['start']:.2f}s)")
+        if max_duration_ms:
+            print(f"  Slot + Gap: {max_duration_ms/1000:.2f}s (Gap: {gap_ms/1000:.2f}s)")
 
         temp_ref_path = f"temp_ref_xtts_{idx}.wav"
         
@@ -410,26 +442,41 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         
         # XTTS synthesis
         speed = 1.0
-        tts.tts_to_file(
-            text=seg["text"],
-            speaker_wav=current_ref_path,
-            language=language,
-            file_path=temp_gen_path,
-            speed=speed,
-        )
-        
-        generated_chunk = AudioSegment.from_wav(temp_gen_path)
-        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
-        if adjusted_speed != speed:
+        with CUDA_LOCK:
             tts.tts_to_file(
                 text=seg["text"],
                 speaker_wav=current_ref_path,
                 language=language,
                 file_path=temp_gen_path,
-                speed=adjusted_speed,
+                speed=speed,
+                temperature=XTTS_TEMPERATURE,
             )
+        
+        generated_chunk = AudioSegment.from_wav(temp_gen_path)
+        gen_len_ms = len(generated_chunk)
+        
+        generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
+        
+        limit_ms = max_duration_ms if max_duration_ms is not None else (current_end_ms - current_start_ms)
+        is_compressing = adjusted_speed != speed
+        
+        print(f"  Generated length: {gen_len_ms/1000:.2f}s")
+        if is_compressing:
+            print(f"  [Compression] Required ratio: {adjusted_speed:.2f}x (to fit in {limit_ms/1000:.2f}s)")
+            with CUDA_LOCK:
+                tts.tts_to_file(
+                    text=seg["text"],
+                    speaker_wav=current_ref_path,
+                    language=language,
+                    file_path=temp_gen_path,
+                    speed=adjusted_speed,
+                    temperature=XTTS_TEMPERATURE,
+                )
             generated_chunk = AudioSegment.from_wav(temp_gen_path)
+            # Re-verify and potentially trim if still slightly over
             generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed, max_duration_ms=max_duration_ms)
+        else:
+            print(f"  [Compression] Not needed (fits in {limit_ms/1000:.2f}s)")
         
         target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
