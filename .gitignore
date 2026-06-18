@@ -7,3 +7,4 @@ ckpts/
 *.pt
 __pycache__/
 .env
+*.bak
