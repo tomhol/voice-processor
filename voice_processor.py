@@ -81,7 +81,16 @@ def transcribe(input_file, language=None, model_size="base", time_start=0, time_
     whisper_model = WhisperModel(model_size, device=DEVICE, compute_type=compute_type)
 
     print(f"Processing audio segments and timings (language={language if language else 'auto'})...")
-    segments, info = whisper_model.transcribe(process_file, word_timestamps=True, language=language)
+    segments, info = whisper_model.transcribe(
+        process_file, 
+        word_timestamps=True, 
+        language=language,
+        vad_filter=True,
+        vad_parameters=dict(
+            min_silence_duration_ms=700, # Lowering this forces breaks on shorter pauses
+            speech_pad_ms=400,
+        )
+    )
     print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
 
     transcribed_segments = []
