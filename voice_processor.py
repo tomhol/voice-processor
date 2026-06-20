@@ -9,6 +9,7 @@ import copy
 import threading
 import numpy as np
 import soundfile as sf
+import re
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
 # F5-TTS imports (keeping them here for now, but will make them optional if possible)
@@ -58,6 +59,17 @@ def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0, max_duration_ms=None):
     ratio = generated_duration_ms / limit_ms
     new_speed = max(0.1, min(10.0, speed_hint * ratio))
     return audio_chunk, new_speed
+
+
+def _trim_trailing_punctuation(text: str) -> str:
+    """Trim trailing interpunction (punctuation) and whitespace from text.
+
+    Removes trailing characters like . , ; : ? ! … and any trailing whitespace.
+    """
+    if not isinstance(text, str):
+        return text
+    # Remove trailing punctuation and whitespace
+    return re.sub(r"[\s\.,;:!?…]+$", "", text)
 
 
 def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
@@ -134,8 +146,14 @@ def translate_segments_llm(segments, target_lang, source_lang="en", context=None
     if context:
         prompt += f"Context: {context}\n"
     prompt += "Provide the translation as a JSON list of strings only, preserving the order and length.\n"
-    prompt += json.dumps(texts, ensure_ascii=False)
+    prompt += json.dumps(texts, ensure_ascii=True, indent=2)
     
+    print(f"Sending prompt to LLM (length: {len(prompt)} characters)...")
+    # dump the prompt into a local file for debugging
+    with open("llm_translation_prompt.txt", "w", encoding="utf-8") as f:
+        f.write(prompt)
+        print("Prompt saved to llm_translation_prompt.txt for debugging.")
+
     try:
         response = model.generate_content(prompt)
         text_response = response.text
@@ -447,11 +465,27 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
 
         temp_gen_path = f"temp_gen_xtts_{idx}.wav"
         
+        # Prepare text for XTTS synthesis (trim trailing interpunction)
+        text_to_speak = _trim_trailing_punctuation(seg.get("text", ""))
+
+        # If trimming leaves the segment empty (e.g., it was only punctuation), insert silence instead
+        if not text_to_speak.strip():
+            print(f"  [XTTS] Segment {idx+1} empty after trimming; inserting silence.")
+            # Create a silent chunk approximately the slot length (or 100ms if unknown)
+            silent_len = max(100, max_duration_ms) if max_duration_ms else max(100, current_end_ms - current_start_ms)
+            generated_chunk = AudioSegment.silent(duration=int(silent_len))
+            target_position_ms, _ = _segment_bounds_ms(seg)
+            final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
+            if not ref_audio and os.path.exists(temp_ref_path):
+                os.remove(temp_ref_path)
+            # No temp_gen_path created, continue to next segment
+            continue
+
         # XTTS synthesis
         speed = 1.0
         with CUDA_LOCK:
             tts.tts_to_file(
-                text=seg["text"],
+                text=text_to_speak,
                 speaker_wav=current_ref_path,
                 language=language,
                 file_path=temp_gen_path,
@@ -473,7 +507,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
             print(f"  [Compression] Required ratio: {adjusted_speed:.2f}x (to fit in {limit_ms/1000:.2f}s)")
             with CUDA_LOCK:
                 tts.tts_to_file(
-                    text=seg["text"],
+                    text=text_to_speak,
                     speaker_wav=current_ref_path,
                     language=language,
                     file_path=temp_gen_path,
