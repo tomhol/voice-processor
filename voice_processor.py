@@ -20,6 +20,8 @@ try:
 except ImportError:
     F5_TTS_AVAILABLE = False
 
+XTTS_TEMPERATURE = 0.5
+
 # Global lock for CUDA operations to prevent potential race conditions
 CUDA_LOCK = threading.Lock()
 
@@ -68,8 +70,9 @@ def _trim_trailing_punctuation(text: str) -> str:
     """
     if not isinstance(text, str):
         return text
-    # Remove trailing punctuation and whitespace
-    return re.sub(r"[\s\.,;:!?…]+$", "", text)
+    # Remove trailing punctuation and whitespace.
+    # Add ! to the end, the XTTS engine would stop any sound after that
+    return re.sub(r"[\s\.,;:!?…]+$", "", text) + "!"  # hack for XTTS
 
 
 def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
@@ -314,6 +317,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
         max_end = max(seg["end"] for seg in transcribed_segments) if transcribed_segments else 0
         final_timeline = AudioSegment.silent(duration=int(max_end * 1000) + 2000)
 
+    current_ref_path = ref_audio
     for idx, seg in enumerate(transcribed_segments):
         # Calculate available space including gap to next segment
         current_start_ms, current_end_ms = _segment_bounds_ms(seg)
@@ -335,6 +339,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
         temp_ref_path = f"temp_ref_{idx}.wav"
         current_ref_text = seg["text"] # Default to the segment text for self-cloning
 
+        current_ref_path = None
         if ref_audio:
             # Global reference audio mode
             current_ref_path = ref_audio
@@ -409,7 +414,7 @@ def synthesize_f5(input_file, transcribed_segments, repo_id, model_type, ref_aud
 
     return final_timeline
 
-def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en", checkpoint_freq=0, target_duration_ms=None):
+def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=None, language="en", checkpoint_freq=0, target_duration_ms=None, debug=False):
     from TTS.api import TTS
 
     print(f"\n[XTTS] Initializing Engine (Language: {language})...")
@@ -446,27 +451,38 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
 
         print(f"\n[XTTS] Synthesizing section {idx+1}/{len(transcribed_segments)}...")
         print(f"  Range: {seg['start']:.2f}s -> {seg['end']:.2f}s (len: {seg['end']-seg['start']:.2f}s)")
+        print(f"  Text: {seg['text']}")
         if max_duration_ms:
             print(f"  Slot + Gap: {max_duration_ms/1000:.2f}s (Gap: {gap_ms/1000:.2f}s)")
 
-        temp_ref_path = f"temp_ref_xtts_{idx}.wav"
+        # Prepare filenames for intermediate XTTS files. If debug is enabled, keep them in
+        # an explicit directory; otherwise use temporary filenames and remove them.
+        if debug:
+            inter_dir = "xtts_intermediates"
+            os.makedirs(inter_dir, exist_ok=True)
+            temp_ref_path = os.path.join(inter_dir, f"ref_xtts_{idx}.wav")
+            temp_gen_path_pre = os.path.join(inter_dir, f"gen_xtts_{idx}_speed1.00.wav")
+            temp_gen_path_post = os.path.join(inter_dir, f"gen_xtts_{idx}_speedUPDATED.wav")
+        else:
+            temp_ref_path = f"temp_ref_xtts_{idx}.wav"
+            temp_gen_path_pre = f"temp_gen_xtts_{idx}.wav"
+            temp_gen_path_post = f"temp_gen_xtts_{idx}_speedUPDATED.wav"
         
+        # Prepare text for XTTS synthesis (trim trailing interpunction)
+        text_to_speak = _trim_trailing_punctuation(seg.get("text", ""))
+        print(f"  Updated text: '{text_to_speak}'")
+
+        # Determine current reference path: either the global ref_audio or an extracted slice
         if ref_audio:
-            # Global reference audio mode
             current_ref_path = ref_audio
         else:
-            # Self-cloning mode
+            # Self-cloning mode: extract and optionally keep the reference slice
             if not base_audio:
                 raise ValueError("Self-cloning requires --input-file to extract reference audio segments.")
             ref_start_ms = int(seg["start"] * 1000)
             ref_end_ms = int(seg["end"] * 1000)
             base_audio[ref_start_ms:ref_end_ms].export(temp_ref_path, format="wav")
             current_ref_path = temp_ref_path
-
-        temp_gen_path = f"temp_gen_xtts_{idx}.wav"
-        
-        # Prepare text for XTTS synthesis (trim trailing interpunction)
-        text_to_speak = _trim_trailing_punctuation(seg.get("text", ""))
 
         # If trimming leaves the segment empty (e.g., it was only punctuation), insert silence instead
         if not text_to_speak.strip():
@@ -476,7 +492,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
             generated_chunk = AudioSegment.silent(duration=int(silent_len))
             target_position_ms, _ = _segment_bounds_ms(seg)
             final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
-            if not ref_audio and os.path.exists(temp_ref_path):
+            if not ref_audio and not debug and os.path.exists(temp_ref_path):
                 os.remove(temp_ref_path)
             # No temp_gen_path created, continue to next segment
             continue
@@ -488,13 +504,13 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                 text=text_to_speak,
                 speaker_wav=current_ref_path,
                 language=language,
-                file_path=temp_gen_path,
+                file_path=temp_gen_path_pre,
                 speed=speed,
-                # temperature=XTTS_TEMPERATURE,
+                temperature=XTTS_TEMPERATURE,
                 # repetition_penalty=XTTS_REPETITION_PENALTY,
             )
-        
-        generated_chunk = AudioSegment.from_wav(temp_gen_path)
+
+        generated_chunk = AudioSegment.from_wav(temp_gen_path_pre)
         gen_len_ms = len(generated_chunk)
         
         generated_chunk, adjusted_speed = _fit_audio_to_slot(generated_chunk, seg, speed_hint=speed, max_duration_ms=max_duration_ms)
@@ -505,17 +521,23 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         print(f"  Generated length: {gen_len_ms/1000:.2f}s")
         if is_compressing:
             print(f"  [Compression] Required ratio: {adjusted_speed:.2f}x (to fit in {limit_ms/1000:.2f}s)")
+            # Write post-speedup generation to a distinct filename including the speed value
+            safe_speed = f"{adjusted_speed:.2f}".replace('.', '_')
+            if debug:
+                temp_gen_path_post = os.path.join(inter_dir, f"gen_xtts_{idx}_speed{safe_speed}.wav")
+            else:
+                temp_gen_path_post = f"temp_gen_xtts_{idx}_speed{safe_speed}.wav"
             with CUDA_LOCK:
                 tts.tts_to_file(
                     text=text_to_speak,
                     speaker_wav=current_ref_path,
                     language=language,
-                    file_path=temp_gen_path,
+                    file_path=temp_gen_path_post,
                     speed=adjusted_speed,
-                    # temperature=XTTS_TEMPERATURE,
+                    temperature=XTTS_TEMPERATURE,
                     # repetition_penalty=XTTS_REPETITION_PENALTY,
                 )
-            generated_chunk = AudioSegment.from_wav(temp_gen_path)
+            generated_chunk = AudioSegment.from_wav(temp_gen_path_post)
             # Re-verify and potentially trim if still slightly over
             generated_chunk, _ = _fit_audio_to_slot(generated_chunk, seg, speed_hint=adjusted_speed, max_duration_ms=max_duration_ms)
         else:
@@ -524,10 +546,23 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
         target_position_ms, _ = _segment_bounds_ms(seg)
         final_timeline = final_timeline.overlay(generated_chunk, position=target_position_ms)
         
-        if not ref_audio and os.path.exists(temp_ref_path):
-            os.remove(temp_ref_path)
-        if os.path.exists(temp_gen_path):
-            os.remove(temp_gen_path)
+        # Preserve intermediate files only in debug mode; otherwise clean up temp files.
+        if debug:
+            if not ref_audio:
+                print(f"  [Saved] Reference slice kept: {temp_ref_path}")
+            print(f"  [Saved] Generated (pre/post) files: {temp_gen_path_pre} {temp_gen_path_post if is_compressing else ''}")
+        else:
+            # remove generated temp files used during synthesis
+            if os.path.exists(temp_gen_path_pre):
+                try:
+                    os.remove(temp_gen_path_pre)
+                except Exception:
+                    pass
+            if is_compressing and os.path.exists(temp_gen_path_post):
+                try:
+                    os.remove(temp_gen_path_post)
+                except Exception:
+                    pass
 
         # Checkpoint logic
         if checkpoint_freq > 0 and (idx + 1) % checkpoint_freq == 0:
@@ -564,6 +599,8 @@ def main():
     parser.add_argument("--translation-context-file", type=str, help="Context for LLM-based translation")
 
     parser.add_argument("--checkpoint-freq", type=int, default=10, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
+
+    parser.add_argument("--debug", action="store_true", help="Enable XTTS debug: save intermediate reference/gen WAV files")
 
     parser.add_argument("--time-start", type=int, default=0, help="Start time in seconds for processing slice")
     parser.add_argument("--time-end", type=int, help="End time in seconds for processing slice")
@@ -699,7 +736,8 @@ def main():
             final_audio = synthesize_xtts(args.input_file, transcribed_segments, 
                                          ref_audio=args.ref_audio_file, ref_text=ref_text_content, 
                                          language=target_lang, checkpoint_freq=args.checkpoint_freq,
-                                         target_duration_ms=target_duration_ms)
+                                         target_duration_ms=target_duration_ms,
+                                         debug=args.debug)
         
         final_audio.export(args.output_file, format="wav")
         print(f"\n[Success] Output saved to: {args.output_file}")
