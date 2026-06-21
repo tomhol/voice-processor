@@ -20,7 +20,8 @@ try:
 except ImportError:
     F5_TTS_AVAILABLE = False
 
-XTTS_TEMPERATURE = 0.5
+XTTS_TEMPERATURE = 0.65
+XTTS_REPETITION_PENALTY = 5.0
 
 # Global lock for CUDA operations to prevent potential race conditions
 CUDA_LOCK = threading.Lock()
@@ -59,7 +60,7 @@ def _fit_audio_to_slot(audio_chunk, seg, speed_hint=1.0, max_duration_ms=None):
 
     # Speed up to fit into the limit
     ratio = generated_duration_ms / limit_ms
-    new_speed = max(0.1, min(10.0, speed_hint * ratio))
+    new_speed = max(0.1, min(1.5, speed_hint * ratio))
     return audio_chunk, new_speed
 
 
@@ -72,7 +73,7 @@ def _trim_trailing_punctuation(text: str) -> str:
         return text
     # Remove trailing punctuation and whitespace.
     # Add ! to the end, the XTTS engine would stop any sound after that
-    return re.sub(r"[\s\.,;:!?…]+$", "", text) + "!"  # hack for XTTS
+    return re.sub(r"[\s\.,;:!?…]+$", "", text) + "  "  # hack for XTTS
 
 
 def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
@@ -507,7 +508,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                 file_path=temp_gen_path_pre,
                 speed=speed,
                 temperature=XTTS_TEMPERATURE,
-                # repetition_penalty=XTTS_REPETITION_PENALTY,
+                repetition_penalty=XTTS_REPETITION_PENALTY,
             )
 
         generated_chunk = AudioSegment.from_wav(temp_gen_path_pre)
@@ -535,7 +536,7 @@ def synthesize_xtts(input_file, transcribed_segments, ref_audio=None, ref_text=N
                     file_path=temp_gen_path_post,
                     speed=adjusted_speed,
                     temperature=XTTS_TEMPERATURE,
-                    # repetition_penalty=XTTS_REPETITION_PENALTY,
+                    repetition_penalty=XTTS_REPETITION_PENALTY,
                 )
             generated_chunk = AudioSegment.from_wav(temp_gen_path_post)
             # Re-verify and potentially trim if still slightly over
@@ -598,7 +599,7 @@ def main():
     parser.add_argument("--translation-engine", type=str, default="nmt", choices=["nmt", "llm"], help="Translation engine to use")
     parser.add_argument("--translation-context-file", type=str, help="Context for LLM-based translation")
 
-    parser.add_argument("--checkpoint-freq", type=int, default=10, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
+    parser.add_argument("--checkpoint-freq", type=int, default=1_000_000, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
 
     parser.add_argument("--debug", action="store_true", help="Enable XTTS debug: save intermediate reference/gen WAV files")
 
