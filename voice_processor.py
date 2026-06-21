@@ -76,6 +76,15 @@ def _trim_trailing_punctuation(text: str) -> str:
     return re.sub(r"[\s\.,;:!?…]+$", "", text) + "  "  # hack for XTTS
 
 
+def _trim_to_time_slice(audio: AudioSegment, start_time_s: int = 0, end_time_s: int = None) -> AudioSegment:
+    """Trim the audio segment using explicit time-start/time-end slice boundaries."""
+    start_ms = max(0, int(start_time_s * 1000)) if start_time_s else 0
+    if end_time_s is not None:
+        end_ms = max(start_ms + 1, int(end_time_s * 1000))
+        return audio[start_ms:end_ms]
+    return audio[start_ms:]
+
+
 def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
     print(f"\n[Step 1] Loading Faster-Whisper to transcribe {input_file}...")
     
@@ -602,6 +611,7 @@ def main():
     parser.add_argument("--checkpoint-freq", type=int, default=1_000_000, help="Frequency (in segments) to save intermediate audio checkpoints (0 to disable)")
 
     parser.add_argument("--debug", action="store_true", help="Enable XTTS debug: save intermediate reference/gen WAV files")
+    parser.add_argument("--trim-start-and-end-silence", action="store_true", help="Trim leading and trailing silence from the final synthesized WAV file")
 
     parser.add_argument("--time-start", type=int, default=0, help="Start time in seconds for processing slice")
     parser.add_argument("--time-end", type=int, help="End time in seconds for processing slice")
@@ -739,7 +749,11 @@ def main():
                                          language=target_lang, checkpoint_freq=args.checkpoint_freq,
                                          target_duration_ms=target_duration_ms,
                                          debug=args.debug)
-        
+
+        if args.trim_start_and_end_silence:
+            print("Trimming final output to time slice boundaries...")
+            final_audio = _trim_to_time_slice(final_audio, args.time_start, args.time_end)
+
         final_audio.export(args.output_file, format="wav")
         print(f"\n[Success] Output saved to: {args.output_file}")
 
