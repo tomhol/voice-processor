@@ -100,13 +100,19 @@ def _time_stretch_audio(audio_chunk: AudioSegment, ratio: float) -> AudioSegment
     try:
         import pytsmod as tsm
         # pytsmod expects (channels, samples) ndarray; returns same shape
-        stretched = tsm.wsola(samples, ratio)
+        # pytsmod's `s` is a time-stretch factor: >1 = longer (slower).
+        # Our `ratio` is a speed factor: >1 = shorter (faster).
+        # Invert so the semantics match.
+        stretched = tsm.wsola(samples, 1.0 / ratio)
     except ImportError:
         try:
             import audiostretchy.stretch as asts
+            # audiostretchy also uses ratio > 1 = longer (slower).
+            # Invert for the same reason as pytsmod above.
+            inverted_ratio = 1.0 / ratio
             out_channels = []
             for ch in samples:
-                out_channels.append(asts.stretch_array(ch, sample_rate, ratio=ratio))
+                out_channels.append(asts.stretch_array(ch, sample_rate, ratio=inverted_ratio))
             stretched = np.array(out_channels)
         except ImportError:
             raise RuntimeError(
