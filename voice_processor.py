@@ -11,7 +11,6 @@ import threading
 import numpy as np
 import soundfile as sf
 import re
-from faster_whisper import WhisperModel
 from pydub import AudioSegment
 
 # F5-TTS imports
@@ -217,6 +216,14 @@ def _write_synthesis_log(log, log_path):
 
 def transcribe(input_file, language=None, model_size="base", time_start=0, time_end=None):
     print(f"🎤  Transcribing {input_file}...")
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise RuntimeError(
+            "faster-whisper is required for transcription. "
+            "Install it with: pip install faster-whisper"
+        ) from exc
 
     audio         = AudioSegment.from_file(input_file)
     full_duration = len(audio) / 1000.0
