@@ -8,3 +8,4 @@ ckpts/
 __pycache__/
 .env
 *.bak
+*.log
