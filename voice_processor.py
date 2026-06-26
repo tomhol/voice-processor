@@ -681,7 +681,7 @@ def main():
                         help="Maximum allowed speedup ratio (default: 1.4). "
                              "Segments requiring more are marked CRITICAL.")
 
-    parser.add_argument("--checkpoint-freq", type=int, default=1_000_000,
+    parser.add_argument("--checkpoint-freq", type=int, default=100,
                         help="Save intermediate audio every N segments (0 to disable)")
 
     parser.add_argument("--crop", action="store_true",
