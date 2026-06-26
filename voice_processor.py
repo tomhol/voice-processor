@@ -684,7 +684,7 @@ def main():
     parser.add_argument("--checkpoint-freq", type=int, default=1_000_000,
                         help="Save intermediate audio every N segments (0 to disable)")
 
-    parser.add_argument("--trim-start-and-end-silence", action="store_true",
+    parser.add_argument("--crop", action="store_true",
                         help="Trim leading and trailing silence from the final output")
 
     parser.add_argument("--time-start", type=int, default=0,
@@ -826,7 +826,7 @@ def main():
                 language=args.output_language,
             )
 
-        if args.trim_start_and_end_silence:
+        if args.crop:
             final_audio = _trim_to_time_slice(final_audio, args.time_start, args.time_end)
 
         final_audio.export(args.output_file, format="wav")
