@@ -5,6 +5,9 @@ soundfile
 f5-tts
 PyYAML
 argostranslate
-coqui-tts
+chatterbox-tts
+pytsmod
+audiostretchy
 huggingface_hub
 google-generativeai
+

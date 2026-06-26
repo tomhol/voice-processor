@@ -1,5 +1,6 @@
 ckpts/
 *.wav
+*.mp4
 *.txt
 *.yaml
 *.json
@@ -9,3 +10,4 @@ __pycache__/
 .env
 *.bak
 *.log
+API_KEY
